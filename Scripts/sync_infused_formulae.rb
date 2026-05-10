@@ -3,19 +3,19 @@
 require "fileutils"
 require "open3"
 require "optparse"
-require "pathname"
 require "ripper"
 require "rubygems"
-require "set"
 require "shellwords"
 require "tempfile"
 
 METHOD_TARGETS = Set["install", "post_install"].freeze
 BLOCK_TARGETS = Set["test", "service", "livecheck", "bottle", "head", "stable"].freeze
 CONTEXT_TARGETS = Set["on_macos", "on_linux", "on_arm", "on_intel", "on_system"].freeze
-DSL_BLOCK_TARGETS = BLOCK_TARGETS + CONTEXT_TARGETS
-SUPPORTED_TARGETS = METHOD_TARGETS + DSL_BLOCK_TARGETS
+DSL_BLOCK_TARGETS = (BLOCK_TARGETS + CONTEXT_TARGETS).freeze
+SUPPORTED_TARGETS = (METHOD_TARGETS + DSL_BLOCK_TARGETS).freeze
 SPACE_TYPES = Set[:on_sp, :on_ignored_nl, :on_nl, :on_comment].freeze
+DO_BODY_SPACE_TYPES = Set[:on_sp, :on_ignored_nl, :on_nl].freeze
+DO_BODY_LINE_BREAK_TYPES = Set[:on_ignored_nl, :on_nl].freeze
 
 Token = Struct.new(:index, :line, :column, :type, :text, :state, :start_offset, :end_offset, keyword_init: true)
 SourceInfo = Struct.new(:source, :path, :line_offsets, :tokens, keyword_init: true)
@@ -34,10 +34,12 @@ SourceBlock = Struct.new(
   :end_line_start,
   :end_indent,
   :body_indent,
-  keyword_init: true
+  keyword_init: true,
 )
-DesiredFormula = Struct.new(:formula, :version, :infusion_path, :source_relpath, :output_relpath, :content, keyword_init: true)
-ChangeSet = Struct.new(:formula, :type, :version, :write_relpath, :write_content, :delete_relpaths, keyword_init: true)
+DesiredFormula = Struct.new(:formula, :version, :infusion_path, :source_relpath, :output_relpath, :content,
+                            keyword_init: true)
+ChangeSet = Struct.new(:formula, :type, :version, :write_relpath, :write_content, :delete_relpaths,
+                       keyword_init: true)
 
 def abort_with(message)
   warn(message)
@@ -90,15 +92,17 @@ end
 
 def formula_class_name(formula)
   unless formula.match?(/\A[a-z0-9]+(?:_[a-z0-9]+)*\z/)
-    abort_with("Invalid infusion filename #{formula.inspect}; expected lowercase words separated by single underscores")
+    abort_with(
+      "Invalid infusion filename #{formula.inspect}; expected lowercase words separated by single underscores",
+    )
   end
 
-  formula.split("_").map { |part| part[0].upcase + part[1..-1].to_s }.join
+  formula.split("_").map { |part| part[0].upcase + part[1..].to_s }.join
 end
 
 def line_offsets_for(source)
   offsets = [0]
-  source.each_line { |line| offsets << offsets.last + line.bytesize }
+  source.each_line { |line| offsets << (offsets.last + line.bytesize) }
   offsets
 end
 
@@ -107,14 +111,14 @@ def source_info(source, path)
   tokens = Ripper.lex(source).each_with_index.map do |((line, column), type, text, state), index|
     start_offset = line_offsets.fetch(line - 1) + column
     Token.new(
-      index: index,
-      line: line,
-      column: column,
-      type: type,
-      text: text,
-      state: state,
+      index:        index,
+      line:         line,
+      column:       column,
+      type:         type,
+      text:         text,
+      state:        state,
       start_offset: start_offset,
-      end_offset: start_offset + text.bytesize
+      end_offset:   start_offset + text.bytesize,
     )
   end
 
@@ -180,7 +184,7 @@ end
 
 def structural_opener?(tokens, index)
   token = tokens.fetch(index)
-  return false unless token.type == :on_kw
+  return false if token.type != :on_kw
 
   case token.text
   when "class", "module", "def", "begin", "case"
@@ -208,7 +212,8 @@ def matching_end_index(tokens, open_index)
     i += 1
   end
 
-  abort_with("Could not find matching end for #{tokens.fetch(open_index).text} at line #{tokens.fetch(open_index).line}")
+  open_token = tokens.fetch(open_index)
+  abort_with("Could not find matching end for #{open_token.text} at line #{open_token.line}")
 end
 
 def find_do_index(tokens, index, limit = nil)
@@ -216,7 +221,7 @@ def find_do_index(tokens, index, limit = nil)
   i = index + 1
   while i < limit
     token = tokens.fetch(i)
-    return nil if [:on_nl, :on_ignored_nl].include?(token.type)
+    return if [:on_nl, :on_ignored_nl].include?(token.type)
     return i if token.type == :on_kw && token.text == "do"
 
     i += 1
@@ -239,9 +244,9 @@ def body_start_after_do(info, do_index, end_index)
     i = close + 1
   end
 
-  while i < end_index && [:on_sp, :on_ignored_nl, :on_nl].include?(tokens.fetch(i).type)
+  while i < end_index && DO_BODY_SPACE_TYPES.include?(tokens.fetch(i).type)
     offset = tokens.fetch(i).end_offset
-    break if [:on_ignored_nl, :on_nl].include?(tokens.fetch(i).type)
+    break if DO_BODY_LINE_BREAK_TYPES.include?(tokens.fetch(i).type)
 
     i += 1
   end
@@ -258,7 +263,9 @@ def literal_string_between(info, start_index, end_index)
       i += 1
       while i < end_index && tokens.fetch(i).type != :on_tstring_end
         token = tokens.fetch(i)
-        abort_with("Interpolated infusion names are not supported in #{info.path}:#{token.line}") if token.type == :on_embexpr_beg
+        if token.type == :on_embexpr_beg
+          abort_with("Interpolated infusion names are not supported in #{info.path}:#{token.line}")
+        end
 
         pieces << token.text if token.type == :on_tstring_content
         i += 1
@@ -276,15 +283,13 @@ def symbol_argument_after(info, index, limit)
   tokens = info.tokens
   sym_index = next_significant(tokens, index + 1, limit)
   token = sym_index && tokens.fetch(sym_index)
-  unless token&.type == :on_symbeg && token.text == ":"
+  if token&.type != :on_symbeg || token.text != ":"
     abort_with("Expected symbol target in #{info.path}:#{tokens.fetch(index).line}")
   end
 
   name_index = next_significant(tokens, sym_index + 1, limit)
   name = name_index && tokens.fetch(name_index)
-  unless name&.type == :on_ident
-    abort_with("Expected symbol target name in #{info.path}:#{token.line}")
-  end
+  abort_with("Expected symbol target name in #{info.path}:#{token.line}") if name&.type != :on_ident
 
   [name.text, name_index]
 end
@@ -303,9 +308,9 @@ end
 def selector_from_call(info, name_index, do_index)
   argument_source, argument_signature = selector_arguments_between(info, name_index, do_index)
   Selector.new(
-    name: info.tokens.fetch(name_index).text,
-    argument_source: argument_source,
-    argument_signature: argument_signature
+    name:               info.tokens.fetch(name_index).text,
+    argument_source:    argument_source,
+    argument_signature: argument_signature,
   )
 end
 
@@ -358,15 +363,19 @@ def parse_infusion_entries(info, start_index, end_index, context_path, operation
     break if significant.nil?
 
     token = tokens.fetch(significant)
-    unless token.type == :on_ident
+    if token.type != :on_ident
       abort_with("Unknown infusion DSL entry in #{info.path}:#{token.line}: #{token.text.inspect}")
     end
 
     if %w[before after overwrite].include?(token.text)
       target, target_index = symbol_argument_after(info, significant, end_index)
-      abort_with("Unsupported infusion target :#{target} in #{info.path}:#{token.line}") unless SUPPORTED_TARGETS.include?(target)
+      unless SUPPORTED_TARGETS.include?(target)
+        abort_with("Unsupported infusion target :#{target} in #{info.path}:#{token.line}")
+      end
       if context_path.any? && METHOD_TARGETS.include?(target)
-        abort_with("Method target :#{target} is only supported at the formula class level in #{info.path}:#{token.line}")
+        abort_with(
+          "Method target :#{target} is only supported at the formula class level in #{info.path}:#{token.line}",
+        )
       end
 
       do_index = find_do_index(tokens, target_index, end_index)
@@ -374,7 +383,9 @@ def parse_infusion_entries(info, start_index, end_index, context_path, operation
 
       extra_index = next_significant(tokens, target_index + 1, do_index)
       if extra_index
-        abort_with("Additional operation target arguments are not supported in #{info.path}:#{tokens.fetch(extra_index).line}")
+        abort_with(
+          "Additional operation target arguments are not supported in #{info.path}:#{tokens.fetch(extra_index).line}",
+        )
       end
 
       operation_end_index = matching_end_index(tokens, do_index)
@@ -385,13 +396,13 @@ def parse_infusion_entries(info, start_index, end_index, context_path, operation
       body_start = body_start_after_do(info, do_index, operation_end_index)
       body = normalize_body(info.source[body_start...tokens.fetch(operation_end_index).start_offset])
       operations << Operation.new(
-        kind: token.text,
-        target: target,
+        kind:         token.text,
+        target:       target,
         context_path: context_path.dup,
-        body: body,
-        path: info.path,
-        line: token.line,
-        sequence: operations.length
+        body:         body,
+        path:         info.path,
+        line:         token.line,
+        sequence:     operations.length,
       )
       i = operation_end_index + 1
       next
@@ -405,7 +416,9 @@ def parse_infusion_entries(info, start_index, end_index, context_path, operation
     abort_with("Expected do block for context #{token.text} in #{info.path}:#{token.line}") unless do_index
 
     context_end_index = matching_end_index(tokens, do_index)
-    abort_with("Context #{token.text} escapes infusion block in #{info.path}:#{token.line}") if context_end_index > end_index
+    if context_end_index > end_index
+      abort_with("Context #{token.text} escapes infusion block in #{info.path}:#{token.line}")
+    end
 
     selector = selector_from_call(info, significant, do_index)
     parse_infusion_entries(info, do_index + 1, context_end_index, context_path + [selector], operations)
@@ -425,19 +438,23 @@ def parse_infusion_file(path, formula)
   info = source_info(source, path)
   tokens = info.tokens
 
-  infusion_indexes = tokens.each_index.select { |index| tokens.fetch(index).type == :on_ident && tokens.fetch(index).text == "infusion" }
+  infusion_indexes = tokens.each_index.select do |index|
+    tokens.fetch(index).type == :on_ident && tokens.fetch(index).text == "infusion"
+  end
   abort_with("No infusion declaration found in #{path}") if infusion_indexes.empty?
   abort_with("Multiple infusion declarations found in #{path}") if infusion_indexes.length > 1
 
   infusion_index = infusion_indexes.fetch(0)
   do_index = find_do_index(tokens, infusion_index)
-  abort_with("Expected do block for infusion declaration in #{path}:#{tokens.fetch(infusion_index).line}") unless do_index
+  unless do_index
+    abort_with("Expected do block for infusion declaration in #{path}:#{tokens.fetch(infusion_index).line}")
+  end
 
   declared_name = literal_string_between(info, infusion_index + 1, do_index)
   abort_with("Expected infusion name string in #{path}:#{tokens.fetch(infusion_index).line}") unless declared_name
 
   expected_name = formula_class_name(formula)
-  unless declared_name == expected_name
+  if declared_name != expected_name
     abort_with("Infusion name mismatch in #{path}: expected #{expected_name.inspect}, got #{declared_name.inspect}")
   end
 
@@ -456,11 +473,11 @@ def infusion_files(infusions_root, filters)
   dir = infusions_dir(infusions_root)
   if filters.any?
     return filters.map { |formula| dir.join("#{formula}.rb") }.select do |path|
-      unless path.file?
+      if path.file?
+        true
+      else
         warn("No infusion found for #{path.basename.to_s.delete_suffix(".rb")}; no local formula will be desired.")
         false
-      else
-        true
       end
     end
   end
@@ -491,7 +508,13 @@ def explicit_formula_version(path)
   match = contents.match(/^\s*version\s+["']([^"']+)["']/)
   return match[1] if match
 
-  url_match = contents.match(/^\s*url\s+["'][^"']*?([0-9][0-9A-Za-z._+-]*)\.(?:tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|zip)["']/)
+  url_version_pattern = /
+    ^\s*url\s+["'][^"']*?
+    ([0-9][0-9A-Za-z._+-]*)
+    \.(?:tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|zip)
+    ["']
+  /x
+  url_match = contents.match(url_version_pattern)
   url_match&.[](1)
 end
 
@@ -509,10 +532,10 @@ def homebrew_formula_version(path)
       end
     end
 
-  return nil unless @homebrew_loaded && defined?(Formulary)
+  return if !@homebrew_loaded || !defined?(Formulary)
 
   Formulary.factory(Pathname(path.to_s)).version.to_s
-rescue StandardError => e
+rescue => e
   warn("Warning: Homebrew could not read #{path}: #{e.class}: #{e.message}")
   nil
 end
@@ -555,29 +578,29 @@ def find_direct_child_method_block(info, parent, target)
   matches = []
 
   tokens.each_with_index do |token, index|
-    next unless token.type == :on_kw && token.text == "def"
+    next if token.type != :on_kw || token.text != "def"
     next unless direct_child_token?(info, parent, index)
 
     name_index = next_significant(tokens, index + 1)
     name = name_index && tokens.fetch(name_index)
-    next unless name&.type == :on_ident && name.text == target
+    next if name&.type != :on_ident || name.text != target
 
     end_index = matching_end_index(tokens, index)
     end_token = tokens.fetch(end_index)
     body_start = info.line_offsets.fetch(token.line)
     end_indent = line_indent_before(info, end_token)
     matches << SourceBlock.new(
-      kind: :method,
-      target: target,
-      open_index: index,
-      end_index: end_index,
-      start_offset: line_start_offset(info, token),
-      body_start: body_start,
-      body_end: end_token.start_offset,
-      end_offset: end_token.end_offset,
+      kind:           :method,
+      target:         target,
+      open_index:     index,
+      end_index:      end_index,
+      start_offset:   line_start_offset(info, token),
+      body_start:     body_start,
+      body_end:       end_token.start_offset,
+      end_offset:     end_token.end_offset,
       end_line_start: line_start_offset(info, end_token),
-      end_indent: end_indent,
-      body_indent: "#{end_indent}  "
+      end_indent:     end_indent,
+      body_indent:    "#{end_indent}  ",
     )
   end
 
@@ -593,7 +616,7 @@ def find_direct_child_dsl_block(info, parent, selector)
   matches = []
 
   tokens.each_with_index do |token, index|
-    next unless token.type == :on_ident && token.text == selector.name
+    next if token.type != :on_ident || token.text != selector.name
     next unless direct_child_token?(info, parent, index)
 
     previous_index = previous_significant(tokens, index - 1)
@@ -602,7 +625,7 @@ def find_direct_child_dsl_block(info, parent, selector)
     do_index = find_do_index(tokens, index)
     next unless do_index
 
-    next unless selector_key(selector_from_call(info, index, do_index)) == selector_key(selector)
+    next if selector_key(selector_from_call(info, index, do_index)) != selector_key(selector)
 
     end_index = matching_end_index(tokens, do_index)
     next if tokens.fetch(end_index).start_offset > parent.body_end
@@ -610,22 +633,25 @@ def find_direct_child_dsl_block(info, parent, selector)
     end_token = tokens.fetch(end_index)
     end_indent = line_indent_before(info, end_token)
     matches << SourceBlock.new(
-      kind: :block,
-      target: selector.name,
-      open_index: do_index,
-      end_index: end_index,
-      start_offset: line_start_offset(info, token),
-      body_start: body_start_after_do(info, do_index, end_index),
-      body_end: end_token.start_offset,
-      end_offset: end_token.end_offset,
+      kind:           :block,
+      target:         selector.name,
+      open_index:     do_index,
+      end_index:      end_index,
+      start_offset:   line_start_offset(info, token),
+      body_start:     body_start_after_do(info, do_index, end_index),
+      body_end:       end_token.start_offset,
+      end_offset:     end_token.end_offset,
       end_line_start: line_start_offset(info, end_token),
-      end_indent: end_indent,
-      body_indent: "#{end_indent}  "
+      end_indent:     end_indent,
+      body_indent:    "#{end_indent}  ",
     )
   end
 
   if matches.length > 1
-    abort_with("Multiple direct child #{selector_display(selector)} blocks found in #{info.path}; infusion target is ambiguous.")
+    abort_with(
+      "Multiple direct child #{selector_display(selector)} blocks found in " \
+      "#{info.path}; infusion target is ambiguous.",
+    )
   end
 
   matches.fetch(0, nil)
@@ -634,7 +660,7 @@ end
 def find_source_block(info, parent, target)
   case target_kind(target)
   when :method
-    abort_with("Method target :#{target} is only supported at the formula class level") unless parent.kind == :class
+    abort_with("Method target :#{target} is only supported at the formula class level") if parent.kind != :class
 
     find_direct_child_method_block(info, parent, target)
   when :block
@@ -644,23 +670,25 @@ end
 
 def find_formula_class_block(info)
   tokens = info.tokens
-  class_index = tokens.each_index.find { |index| tokens.fetch(index).type == :on_kw && tokens.fetch(index).text == "class" }
+  class_index = tokens.each_index.find do |index|
+    tokens.fetch(index).type == :on_kw && tokens.fetch(index).text == "class"
+  end
   abort_with("No formula class found in #{info.path}") unless class_index
 
   end_index = matching_end_index(tokens, class_index)
   end_token = tokens.fetch(end_index)
   SourceBlock.new(
-    kind: :class,
-    target: "class",
-    open_index: class_index,
-    end_index: end_index,
-    start_offset: line_start_offset(info, tokens.fetch(class_index)),
-    body_start: info.line_offsets.fetch(tokens.fetch(class_index).line),
-    body_end: end_token.start_offset,
-    end_offset: end_token.end_offset,
+    kind:           :class,
+    target:         "class",
+    open_index:     class_index,
+    end_index:      end_index,
+    start_offset:   line_start_offset(info, tokens.fetch(class_index)),
+    body_start:     info.line_offsets.fetch(tokens.fetch(class_index).line),
+    body_end:       end_token.start_offset,
+    end_offset:     end_token.end_offset,
     end_line_start: line_start_offset(info, end_token),
-    end_indent: line_indent_before(info, end_token),
-    body_indent: "#{line_indent_before(info, end_token)}  "
+    end_indent:     line_indent_before(info, end_token),
+    body_indent:    "#{line_indent_before(info, end_token)}  ",
   )
 end
 
@@ -691,7 +719,7 @@ def expand_original_calls(body, original_body, operation)
          tokens.fetch(call_index).text == "call"
         prefix = line_prefix_at(body, token.start_offset)
         suffix = line_suffix_at(body, tokens.fetch(call_index).end_offset)
-        unless prefix.strip.empty? && suffix.strip.empty?
+        if !prefix.strip.empty? || !suffix.strip.empty?
           abort_with("original.call must be the only expression on its line in #{operation.path}:#{operation.line}")
         end
 
@@ -749,7 +777,7 @@ def new_target_block(kind, target, body, member_indent)
 end
 
 def new_context_block(selector, child_blocks, member_indent)
-  "\n#{member_indent}#{selector_source(selector)} do\n#{child_blocks.sub(/\A\n/, "")}#{member_indent}end\n"
+  "\n#{member_indent}#{selector_source(selector)} do\n#{child_blocks.delete_prefix("\n")}#{member_indent}end\n"
 end
 
 def first_sequence(operation_groups)
@@ -762,18 +790,20 @@ end
 
 def child_operation_entries(operation_groups, depth)
   leaf_entries = operation_groups.select { |operations| operations.fetch(0).context_path.length == depth }
-                                  .map { |operations| [:leaf, operations] }
+                                 .map { |operations| [:leaf, operations] }
 
-  context_entries = operation_groups.reject { |operations| operations.fetch(0).context_path.length == depth }
-                                    .group_by { |operations| selector_key(operations.fetch(0).context_path.fetch(depth)) }
-                                    .values
-                                    .map do |groups|
-                                      selector = groups.fetch(0).fetch(0).context_path.fetch(depth)
-                                      [:context, selector, groups]
-                                    end
+  context_groups = operation_groups.reject { |operations| operations.fetch(0).context_path.length == depth }
+                                   .group_by do |operations|
+                                     selector_key(operations.fetch(0).context_path.fetch(depth))
+                                   end
+                                   .values
+  context_entries = context_groups.map do |groups|
+    selector = groups.fetch(0).fetch(0).context_path.fetch(depth)
+    [:context, selector, groups]
+  end
 
   (leaf_entries + context_entries).sort_by do |entry|
-    entry.fetch(0) == :leaf ? first_sequence([entry.fetch(1)]) : first_sequence(entry.fetch(2))
+    (entry.fetch(0) == :leaf) ? first_sequence([entry.fetch(1)]) : first_sequence(entry.fetch(2))
   end
 end
 
@@ -825,7 +855,7 @@ def collect_infusion_edits(info, parent, operation_groups, depth, edits, inserti
 end
 
 def assert_non_overlapping_edits(edits)
-  ranged_edits = edits.select { |start_offset, end_offset, _content| start_offset != end_offset }
+  ranged_edits = edits.reject { |start_offset, end_offset, _content| start_offset == end_offset }
                       .sort_by { |start_offset, end_offset, _content| [start_offset, end_offset] }
   insertion_edits = edits.select { |start_offset, end_offset, _content| start_offset == end_offset }
 
@@ -855,7 +885,10 @@ def apply_infusion_to_source(source, upstream_path, infusion)
   assert_non_overlapping_edits(edits)
 
   updated = source.dup
-  edits.sort_by { |start_offset, end_offset, _content| [start_offset, end_offset] }.reverse_each do |start_offset, end_offset, content|
+  sorted_edits = edits.sort_by do |start_offset, end_offset, _content|
+    [start_offset, end_offset]
+  end
+  sorted_edits.reverse_each do |start_offset, end_offset, content|
     updated[start_offset...end_offset] = content
   end
 
@@ -865,8 +898,8 @@ end
 
 def brew_command
   ENV["PATH"].to_s.split(File::PATH_SEPARATOR).map { |dir| File.join(dir, "brew") }
-     .concat(%w[/opt/homebrew/bin/brew /usr/local/bin/brew])
-     .find { |path| File.executable?(path) }
+                                              .push("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
+                                              .find { |path| File.executable?(path) }
 end
 
 def ruby_syntax_checker
@@ -893,7 +926,10 @@ end
 def validate_generated_formula(original_source, updated_source, upstream_path, infusion_path)
   original_error = ruby_syntax_error(original_source)
   if original_error
-    warn("Warning: Skipping generated formula syntax check because #{upstream_path} is not parseable by #{ruby_syntax_checker_name}.")
+    warn(
+      "Warning: Skipping generated formula syntax check because " \
+      "#{upstream_path} is not parseable by #{ruby_syntax_checker_name}.",
+    )
     return
   end
 
@@ -921,12 +957,12 @@ def desired_formulae(infusions_root, upstream_root, filters)
     content = apply_infusion_to_source(upstream_path.read, upstream_path, infusion)
 
     desired[formula] = DesiredFormula.new(
-      formula: formula,
-      version: version,
-      infusion_path: infusion.path,
+      formula:        formula,
+      version:        version,
+      infusion_path:  infusion.path,
       source_relpath: source_relpath,
       output_relpath: output_formula_relpath(formula),
-      content: content
+      content:        content,
     )
   end
 
@@ -954,28 +990,28 @@ def build_changes(repo_root, desired, filters)
     next if output_path.file? && output_path.read == formula.content
 
     changes[formula.formula] = ChangeSet.new(
-      formula: formula.formula,
-      type: output_path.file? ? :update : :add,
-      version: formula.version,
-      write_relpath: formula.output_relpath,
-      write_content: formula.content,
-      delete_relpaths: []
+      formula:         formula.formula,
+      type:            output_path.file? ? :update : :add,
+      version:         formula.version,
+      write_relpath:   formula.output_relpath,
+      write_content:   formula.content,
+      delete_relpaths: [],
     )
   end
 
   local_formula_files(root).each do |path|
     relpath = path.relative_path_from(root).to_s
     formula = formula_name_from_path(path)
-    next if scoped_formulas && !scoped_formulas.include?(formula)
+    next if scoped_formulas&.exclude?(formula)
     next if desired_paths[formula] == relpath
 
     change = changes[formula] ||= ChangeSet.new(
-      formula: formula,
-      type: :remove,
-      version: nil,
-      write_relpath: nil,
-      write_content: nil,
-      delete_relpaths: []
+      formula:         formula,
+      type:            :remove,
+      version:         nil,
+      write_relpath:   nil,
+      write_content:   nil,
+      delete_relpaths: [],
     )
     change.delete_relpaths << relpath
   end
@@ -1039,12 +1075,12 @@ end
 
 def run_sync_infused_formulae(argv = ARGV)
   options = {
-    repo_root: Dir.pwd,
-    infusions_root: nil,
-    upstream_root: nil,
-    formula: nil,
-    dry_run: false,
-    list_upstream_paths: false
+    repo_root:           Dir.pwd,
+    infusions_root:      nil,
+    upstream_root:       nil,
+    formula:             nil,
+    dry_run:             false,
+    list_upstream_paths: false,
   }
 
   OptionParser.new do |parser|
@@ -1061,7 +1097,9 @@ def run_sync_infused_formulae(argv = ARGV)
   filters = filters_from(options[:formula])
 
   if options[:list_upstream_paths]
-    paths = infusions(options[:infusions_root], filters).keys.flat_map { |formula| upstream_candidate_relpaths(formula) }.uniq.sort
+    paths = infusions(options[:infusions_root], filters).keys.flat_map do |formula|
+      upstream_candidate_relpaths(formula)
+    end.uniq.sort
     puts(paths)
     return
   end

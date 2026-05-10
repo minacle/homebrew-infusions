@@ -31,7 +31,9 @@ infusion "Foo" do
 
   overwrite :service do |original|
     # Replaces service do; original.call expands the previous body.
+    working_dir var
     original.call
+    environment_variables FOO_EXAMPLE: "1"
   end
 
   after :test do
@@ -57,7 +59,9 @@ infusion "Foo" do
 
     overwrite :on_intel do |original|
       # Replaces only the matching nested on_intel do block.
+      depends_on "foo"
       original.call
+      depends_on "bar"
     end
   end
 

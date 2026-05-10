@@ -1,20 +1,19 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "open-uri"
+require "net/http"
 require "optparse"
-require "pathname"
 
 require_relative "sync_infused_formulae"
 
 def fetch_upstream_formula(formula, upstream_ref)
   upstream_candidate_relpaths(formula).each do |relpath|
     url = "https://raw.githubusercontent.com/Homebrew/homebrew-core/#{upstream_ref}/#{relpath}"
-    begin
-      return [URI.open(url, &:read), "Homebrew/homebrew-core@#{upstream_ref}:#{relpath}"]
-    rescue OpenURI::HTTPError => e
-      raise unless e.io.status.fetch(0) == "404"
-    end
+    response = Net::HTTP.get_response(URI(url))
+    next if response.is_a?(Net::HTTPNotFound)
+
+    response.value
+    return [response.body, "Homebrew/homebrew-core@#{upstream_ref}:#{relpath}"]
   end
 
   abort_with("No upstream formula found for #{formula} at Homebrew/homebrew-core@#{upstream_ref}")
@@ -40,29 +39,39 @@ end
 
 def run_local_infuse(argv = ARGV)
   options = {
-    upstream_ref: "main",
-    upstream_root: nil,
+    upstream_ref:     "main",
+    upstream_root:    nil,
     upstream_formula: nil,
-    output: nil,
-    force: false
+    output:           nil,
+    force:            false,
   }
 
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: brew ruby -- Scripts/local_infuse.rb INFUSION.rb [options]"
-    opts.on("--upstream-root PATH", "Use a local Homebrew/homebrew-core checkout") { |value| options[:upstream_root] = value }
-    opts.on("--upstream-formula PATH", "Use a specific upstream formula file") { |value| options[:upstream_formula] = value }
-    opts.on("--upstream-ref REF", "Homebrew/homebrew-core ref to fetch when no local upstream is given") { |value| options[:upstream_ref] = value }
+    opts.on("--upstream-root PATH", "Use a local Homebrew/homebrew-core checkout") do |value|
+      options[:upstream_root] = value
+    end
+    opts.on("--upstream-formula PATH", "Use a specific upstream formula file") do |value|
+      options[:upstream_formula] = value
+    end
+    opts.on("--upstream-ref REF", "Homebrew/homebrew-core ref to fetch when no local upstream is given") do |value|
+      options[:upstream_ref] = value
+    end
     opts.on("--output PATH", "Output path, default: ./<formula>.infused.rb") { |value| options[:output] = value }
     opts.on("--force", "Overwrite an existing explicit --output file") { options[:force] = true }
   end
 
   parser.parse!(argv)
-  abort_with(parser.to_s) unless argv.length == 1
-  abort_with("Use only one of --upstream-root and --upstream-formula") if options[:upstream_root] && options[:upstream_formula]
+  abort_with(parser.to_s) if argv.length != 1
+  if options[:upstream_root] && options[:upstream_formula]
+    abort_with("Use only one of --upstream-root and --upstream-formula")
+  end
 
   infusion_path = Pathname(argv.fetch(0))
   abort_with("Infusion file not found: #{infusion_path}") unless infusion_path.file?
-  abort_with("Infusion file must have a .rb extension: #{infusion_path}") unless infusion_path.basename.to_s.end_with?(".rb")
+  unless infusion_path.basename.to_s.end_with?(".rb")
+    abort_with("Infusion file must have a .rb extension: #{infusion_path}")
+  end
 
   formula = infusion_path.basename.to_s.delete_suffix(".rb")
   infusion = parse_infusion_file(infusion_path, formula)

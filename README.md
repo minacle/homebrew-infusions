@@ -36,6 +36,9 @@ infusion "Foo" do
     environment_variables FOO_EXAMPLE: "1"
   end
 
+  overwrite :bottle
+  # Removes the existing bottle block if upstream has one.
+
   after :test do
     # Appended to test do.
   end
@@ -44,8 +47,9 @@ end
 
 Supported targets are `install`, `post_install`, `test`, `service`,
 `livecheck`, `bottle`, `head`, `stable`, `on_macos`, `on_linux`, `on_arm`,
-`on_intel`, and `on_system`. Missing targets are created. Each infusion applies
-to the current upstream formula with the same filename token.
+`on_intel`, and `on_system`. Missing targets are created, except for blockless
+`overwrite :target`, which is a no-op when the target is absent. Each infusion
+applies to the current upstream formula with the same filename token.
 
 Nested Homebrew blocks can be used as context selectors. Operations inside a
 context target only the matching direct child block at that path.

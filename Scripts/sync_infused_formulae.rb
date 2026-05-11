@@ -20,7 +20,8 @@ DO_BODY_LINE_BREAK_TYPES = Set[:on_ignored_nl, :on_nl].freeze
 Token = Struct.new(:index, :line, :column, :type, :text, :state, :start_offset, :end_offset, keyword_init: true)
 SourceInfo = Struct.new(:source, :path, :line_offsets, :tokens, keyword_init: true)
 Selector = Struct.new(:name, :argument_source, :argument_signature, keyword_init: true)
-Operation = Struct.new(:kind, :target, :context_path, :body, :path, :line, :sequence, keyword_init: true)
+Operation = Struct.new(:kind, :target, :context_path, :body, :delete_target, :path, :line, :sequence,
+                       keyword_init: true)
 Infusion = Struct.new(:formula, :declared_name, :path, :operations, keyword_init: true)
 SourceBlock = Struct.new(
   :kind,
@@ -221,12 +222,22 @@ def find_do_index(tokens, index, limit = nil)
   i = index + 1
   while i < limit
     token = tokens.fetch(i)
-    return if [:on_nl, :on_ignored_nl].include?(token.type)
+    return if [:on_nl, :on_ignored_nl, :on_semicolon].include?(token.type)
     return i if token.type == :on_kw && token.text == "do"
 
     i += 1
   end
   nil
+end
+
+def line_break_index(tokens, index, limit)
+  i = index
+  while i < limit
+    return i if DO_BODY_LINE_BREAK_TYPES.include?(tokens.fetch(i).type)
+
+    i += 1
+  end
+  limit
 end
 
 def body_start_after_do(info, do_index, end_index)
@@ -379,7 +390,33 @@ def parse_infusion_entries(info, start_index, end_index, context_path, operation
       end
 
       do_index = find_do_index(tokens, target_index, end_index)
-      abort_with("Expected do block for #{token.text} :#{target} in #{info.path}:#{token.line}") unless do_index
+      unless do_index
+        if token.text != "overwrite"
+          abort_with("Expected do block for #{token.text} :#{target} in #{info.path}:#{token.line}")
+        end
+
+        line_end_index = line_break_index(tokens, target_index + 1, end_index)
+        extra_index = next_significant(tokens, target_index + 1, line_end_index)
+        if extra_index
+          extra_token = tokens.fetch(extra_index)
+          abort_with(
+            "Additional operation target arguments are not supported in #{info.path}:#{extra_token.line}",
+          )
+        end
+
+        operations << Operation.new(
+          kind:          token.text,
+          target:        target,
+          context_path:  context_path.dup,
+          body:          "",
+          delete_target: true,
+          path:          info.path,
+          line:          token.line,
+          sequence:      operations.length,
+        )
+        i = line_end_index + 1
+        next
+      end
 
       extra_index = next_significant(tokens, target_index + 1, do_index)
       if extra_index
@@ -396,13 +433,14 @@ def parse_infusion_entries(info, start_index, end_index, context_path, operation
       body_start = body_start_after_do(info, do_index, operation_end_index)
       body = normalize_body(info.source[body_start...tokens.fetch(operation_end_index).start_offset])
       operations << Operation.new(
-        kind:         token.text,
-        target:       target,
-        context_path: context_path.dup,
-        body:         body,
-        path:         info.path,
-        line:         token.line,
-        sequence:     operations.length,
+        kind:          token.text,
+        target:        target,
+        context_path:  context_path.dup,
+        body:          body,
+        delete_target: false,
+        path:          info.path,
+        line:          token.line,
+        sequence:      operations.length,
       )
       i = operation_end_index + 1
       next
@@ -745,13 +783,37 @@ def expand_original_calls(body, original_body, operation)
   normalize_body(expanded)
 end
 
-def composed_body(original_body, operations)
-  overwrites = operations.select { |operation| operation.kind == "overwrite" }
+def overwrite_operations(operations)
+  operations.select { |operation| operation.kind == "overwrite" }
+end
+
+def delete_overwrite_operation(operations)
+  overwrite_operations(operations).find(&:delete_target)
+end
+
+def validate_operation_group!(operations)
+  overwrites = overwrite_operations(operations)
   if overwrites.length > 1
     duplicate = overwrites.fetch(1)
     abort_with("Multiple overwrite operations for :#{duplicate.target} in #{duplicate.path}:#{duplicate.line}")
   end
 
+  delete_overwrite = overwrites.find(&:delete_target)
+  return unless delete_overwrite
+  return if operations.all? { |operation| operation.kind == "overwrite" }
+
+  abort_with(
+    "Blockless overwrite for :#{delete_overwrite.target} cannot be combined with before/after operations " \
+    "in #{delete_overwrite.path}:#{delete_overwrite.line}",
+  )
+end
+
+def composed_body(original_body, operations)
+  validate_operation_group!(operations)
+  delete_overwrite = delete_overwrite_operation(operations)
+  abort_with("Blockless overwrite for :#{delete_overwrite.target} cannot be composed") if delete_overwrite
+
+  overwrites = overwrite_operations(operations)
   base =
     if overwrites.any?
       expand_original_calls(overwrites.fetch(0).body, original_body, overwrites.fetch(0))
@@ -762,6 +824,11 @@ def composed_body(original_body, operations)
   before = operations.select { |operation| operation.kind == "before" }.map(&:body)
   after = operations.select { |operation| operation.kind == "after" }.map(&:body)
   (before + [base] + after).reject(&:empty?).join("\n")
+end
+
+def source_block_removal_range(source, block)
+  line_end = source.index("\n", block.end_offset)
+  [block.start_offset, line_end ? line_end + 1 : block.end_offset]
 end
 
 def new_target_block(kind, target, body, member_indent)
@@ -811,6 +878,9 @@ def render_missing_children(operation_groups, depth, member_indent)
   child_operation_entries(operation_groups, depth).map do |entry|
     if entry.fetch(0) == :leaf
       operations = entry.fetch(1)
+      validate_operation_group!(operations)
+      next "" if delete_overwrite_operation(operations)
+
       target = operations.fetch(0).target
       kind = target_kind(target)
       body = composed_body("", operations)
@@ -819,6 +889,8 @@ def render_missing_children(operation_groups, depth, member_indent)
       selector = entry.fetch(1)
       groups = entry.fetch(2)
       child_blocks = render_missing_children(groups, depth + 1, "#{member_indent}  ")
+      next "" if child_blocks.empty?
+
       new_context_block(selector, child_blocks, member_indent)
     end
   end.join
@@ -828,9 +900,17 @@ def collect_infusion_edits(info, parent, operation_groups, depth, edits, inserti
   child_operation_entries(operation_groups, depth).each do |entry|
     if entry.fetch(0) == :leaf
       operations = entry.fetch(1)
+      validate_operation_group!(operations)
+      delete_overwrite = delete_overwrite_operation(operations)
       target = operations.fetch(0).target
-      kind = target_kind(target)
       block = find_source_block(info, parent, target)
+
+      if delete_overwrite
+        edits << [*source_block_removal_range(info.source, block), ""] if block
+        next
+      end
+
+      kind = target_kind(target)
       original_body = block ? normalize_body(info.source[block.body_start...block.body_end]) : ""
       body = composed_body(original_body, operations)
 
@@ -848,6 +928,8 @@ def collect_infusion_edits(info, parent, operation_groups, depth, edits, inserti
         collect_infusion_edits(info, block, groups, depth + 1, edits, insertions)
       else
         child_blocks = render_missing_children(groups, depth + 1, "#{parent.body_indent}  ")
+        next if child_blocks.empty?
+
         insertions[parent.end_line_start] << new_context_block(selector, child_blocks, parent.body_indent)
       end
     end

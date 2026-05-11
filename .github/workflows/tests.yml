@@ -5,9 +5,17 @@ on:
     branches:
       - main
   pull_request:
+  workflow_run:
+    workflows:
+      - sync infused formulae
+    types:
+      - completed
+    branches:
+      - main
 
 jobs:
   test-bot:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
         os: [ macos-15-intel, macos-26 ]

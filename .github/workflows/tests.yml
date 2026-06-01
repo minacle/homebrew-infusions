@@ -29,6 +29,8 @@ jobs:
       checks: read
       contents: read
       pull-requests: read
+    env:
+      HOMEBREW_USER_CONFIG_HOME: ${{ github.workspace }}/home/.homebrew
     steps:
       - name: Set up Homebrew
         id: set-up-homebrew
@@ -43,21 +45,13 @@ jobs:
           key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
           restore-keys: ${{ matrix.os }}-rubygems-
 
-      - name: Trust tap formulae
+      - name: Trust tap
         run: |
           if ! brew help trust >/dev/null 2>&1; then
             exit 0
           fi
 
-          tap_path="$(brew --repository minacle/infusions)"
-          if [ ! -d "${tap_path}/Formula" ]; then
-            echo "No formulae found in ${tap_path}/Formula"
-            exit 0
-          fi
-
-          find "${tap_path}/Formula" -name '*.rb' -type f -exec basename {} .rb \; | sort | while read -r formula; do
-            brew trust --formula "minacle/infusions/${formula}"
-          done
+          brew trust minacle/infusions
 
       - run: brew test-bot --only-cleanup-before
 

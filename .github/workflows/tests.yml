@@ -43,6 +43,16 @@ jobs:
           key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
           restore-keys: ${{ matrix.os }}-rubygems-
 
+      - name: Trust tap formulae
+        run: |
+          if ! brew help trust >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          find Formula -name '*.rb' -type f -exec basename {} .rb \; | sort | while read -r formula; do
+            brew trust --formula "minacle/infusions/${formula}"
+          done
+
       - run: brew test-bot --only-cleanup-before
 
       - run: brew test-bot --only-setup

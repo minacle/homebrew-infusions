@@ -30,7 +30,7 @@ jobs:
       contents: read
       pull-requests: read
     env:
-      HOMEBREW_USER_CONFIG_HOME: ${{ github.workspace }}/home/.homebrew
+      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
       - name: Set up Homebrew
         id: set-up-homebrew
@@ -44,14 +44,6 @@ jobs:
           path: ${{ steps.set-up-homebrew.outputs.gems-path }}
           key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
           restore-keys: ${{ matrix.os }}-rubygems-
-
-      - name: Trust tap
-        run: |
-          if ! brew help trust >/dev/null 2>&1; then
-            exit 0
-          fi
-
-          brew trust minacle/infusions
 
       - run: brew test-bot --only-cleanup-before
 

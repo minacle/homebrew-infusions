@@ -980,8 +980,8 @@ end
 
 def brew_command
   ENV["PATH"].to_s.split(File::PATH_SEPARATOR).map { |dir| File.join(dir, "brew") }
-                                              .push("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
-                                              .find { |path| File.executable?(path) }
+             .push("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
+             .find { |path| File.executable?(path) }
 end
 
 def ruby_syntax_checker

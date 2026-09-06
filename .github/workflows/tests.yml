@@ -47,6 +47,16 @@ jobs:
 
       - run: brew test-bot --only-setup
 
+      - name: Install standalone ShellCheck on Intel macOS
+        if: matrix.os == 'macos-15-intel'
+        run: |
+          version="$(brew ruby -e 'require "formula"; puts Formula["shellcheck"].version')"
+          curl --fail --location --retry 3 \
+            "https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.darwin.x86_64.tar.gz" \
+            --output "${RUNNER_TEMP}/shellcheck.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/shellcheck.tar.gz" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/shellcheck-v${version}" >> "${GITHUB_PATH}"
+
       - run: brew test-bot --only-tap-syntax --verbose
       - run: brew test-bot --only-formulae
         if: github.event_name == 'pull_request'

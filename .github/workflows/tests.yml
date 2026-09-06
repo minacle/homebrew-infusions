@@ -13,17 +13,25 @@ on:
     branches:
       - main
 
+permissions: {}
+
+defaults:
+  run:
+    shell: bash -xeuo pipefail {0}
+
 jobs:
   test-bot:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
-        os: [ macos-15-intel, macos-26 ]
+        os: [ macos-26 ]
         include:
           - os: ubuntu-latest
-            container: ghcr.io/homebrew/brew:main
+            container:
+              image: ghcr.io/homebrew/brew:main
+              options: --privileged
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    container: ${{ fromJSON(toJSON(matrix.container)) }} # zizmor: ignore[unpinned-images]
     permissions:
       actions: read
       checks: read
@@ -32,12 +40,12 @@ jobs:
     steps:
       - name: Set up Homebrew
         id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@main
+        uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607 # 2026.08.31.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache Homebrew Bundler RubyGems
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.set-up-homebrew.outputs.gems-path }}
           key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
@@ -47,29 +55,13 @@ jobs:
 
       - run: brew test-bot --only-setup
 
-      - name: Install standalone linters on Intel macOS
-        if: matrix.os == 'macos-15-intel'
-        run: |
-          version="$(brew ruby -e 'require "formula"; puts Formula["shellcheck"].version')"
-          curl --fail --location --retry 3 \
-            "https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.darwin.x86_64.tar.gz" \
-            --output "${RUNNER_TEMP}/shellcheck.tar.gz"
-          tar -xzf "${RUNNER_TEMP}/shellcheck.tar.gz" -C "${RUNNER_TEMP}"
-          install -m 755 "${RUNNER_TEMP}/shellcheck-v${version}/shellcheck" "$(brew --prefix)/bin/shellcheck"
-          version="$(brew ruby -e 'require "formula"; puts Formula["actionlint"].version')"
-          curl --fail --location --retry 3 \
-            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_darwin_amd64.tar.gz" \
-            --output "${RUNNER_TEMP}/actionlint.tar.gz"
-          tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
-          install -m 755 "${RUNNER_TEMP}/actionlint" "$(brew --prefix)/bin/actionlint"
-
       - run: brew test-bot --only-tap-syntax --verbose
       - run: brew test-bot --only-formulae
         if: github.event_name == 'pull_request'
 
       - name: Upload bottles as artifact
         if: always() && github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bottles_${{ matrix.os }}
           path: '*.bottle.*'

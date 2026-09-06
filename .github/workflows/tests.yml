@@ -29,8 +29,6 @@ jobs:
       checks: read
       contents: read
       pull-requests: read
-    env:
-      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
       - name: Set up Homebrew
         id: set-up-homebrew

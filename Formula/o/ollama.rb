@@ -23,7 +23,6 @@ class Ollama < Formula
     sha256 cellar: :any,                 x86_64_linux:  "b35346c616abaaed4eea9a3555231e9fd6c270cd89944d2573b2a1d9fc4be959"
   end
 
-  depends_on "ccache" => :build
   depends_on "cmake" => :build
   depends_on "go" => :build
 

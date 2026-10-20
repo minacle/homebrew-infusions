@@ -1063,7 +1063,7 @@ end
 
 def build_changes(repo_root, desired, filters)
   root = Pathname(repo_root)
-  scoped_formulas = filters.any? ? filters.to_set : nil
+  scoped_formulas = filters.to_set if filters.any?
   desired_paths = desired.transform_values(&:output_relpath)
   changes = {}
 

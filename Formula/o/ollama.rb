@@ -75,7 +75,11 @@ class Ollama < Formula
     llama_source_dir = buildpath/"llama.cpp"
     llama_source_dir.install resource("llama.cpp")
 
-    preset = (OS.mac? && Hardware::CPU.arm?) ? "darwin" : "cpu"
+    preset = if OS.mac? && Hardware::CPU.arm?
+      "darwin"
+    else
+      "cpu"
+    end
 
     args = %W[
       --preset #{preset}
@@ -127,6 +131,12 @@ class Ollama < Formula
       (libexec/"lib/ollama/mlx_metal_v3").mkpath
       ln_sf formula_opt_lib("mlx-c")/"libmlxc.dylib", libexec/"lib/ollama/mlx_metal_v3/libmlxc.dylib"
     end
+
+    service do
+      environment_variables OLLAMA_FLASH_ATTENTION: "1",
+                            OLLAMA_HOST:            "0.0.0.0",
+                            OLLAMA_KV_CACHE_TYPE:   "q8_0"
+    end
   end
 
   service do
@@ -136,9 +146,6 @@ class Ollama < Formula
     log_path var/"log/ollama.log"
     error_log_path var/"log/ollama.log"
     environment_variables OLLAMA_FLASH_ATTENTION: "1",
-                          OLLAMA_KV_CACHE_TYPE:   "q8_0"
-    environment_variables OLLAMA_FLASH_ATTENTION: "1",
-                          OLLAMA_HOST:            "0.0.0.0",
                           OLLAMA_KV_CACHE_TYPE:   "q8_0"
   end
 

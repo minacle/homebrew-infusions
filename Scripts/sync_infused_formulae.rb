@@ -59,8 +59,9 @@ def run_git!(*args, chdir:)
   stdout, stderr, status = Open3.capture3("git", *args, chdir: chdir)
   return stdout if status.success?
 
+  command = ["git", *args].shelljoin
   abort_with <<~ERROR
-    Command failed: #{(["git"] + args).shelljoin}
+    Command failed: #{command}
     #{stderr}
   ERROR
 end
@@ -514,7 +515,8 @@ def infusion_files(infusions_root, filters)
       if path.file?
         true
       else
-        warn("No infusion found for #{path.basename.to_s.delete_suffix(".rb")}; no local formula will be desired.")
+        formula = path.basename.to_s.delete_suffix(".rb")
+        warn("No infusion found for #{formula}; no local formula will be desired.")
         false
       end
     end
@@ -763,7 +765,11 @@ def expand_original_calls(body, original_body, operation)
 
         if original_body.empty?
           line_end = body.index("\n", tokens.fetch(call_index).end_offset)
-          edit_end = line_end ? line_end + 1 : body.bytesize
+          edit_end = if line_end
+            line_end + 1
+          else
+            body.bytesize
+          end
           edits << [line_start_offset(info, token), edit_end, ""]
         else
           replacement = original_body.split("\n", -1).join("\n#{prefix}")
@@ -828,16 +834,22 @@ end
 
 def source_block_removal_range(source, block)
   line_end = source.index("\n", block.end_offset)
-  [block.start_offset, line_end ? line_end + 1 : block.end_offset]
+  removal_end = if line_end
+    line_end + 1
+  else
+    block.end_offset
+  end
+  [block.start_offset, removal_end]
 end
 
 def new_target_block(kind, target, body, member_indent)
   body_indent = "#{member_indent}  "
+  indented_body = indent_body(body, body_indent, member_indent)
   case kind
   when :method
-    "\n#{member_indent}def #{target}\n#{indent_body(body, body_indent, member_indent)}end\n"
+    "\n#{member_indent}def #{target}\n#{indented_body}end\n"
   when :block
-    "\n#{member_indent}#{target} do\n#{indent_body(body, body_indent, member_indent)}end\n"
+    "\n#{member_indent}#{target} do\n#{indented_body}end\n"
   else
     abort_with("Cannot create target of kind #{kind}")
   end
@@ -870,7 +882,11 @@ def child_operation_entries(operation_groups, depth)
   end
 
   (leaf_entries + context_entries).sort_by do |entry|
-    (entry.fetch(0) == :leaf) ? first_sequence([entry.fetch(1)]) : first_sequence(entry.fetch(2))
+    if entry.fetch(0) == :leaf
+      first_sequence([entry.fetch(1)])
+    else
+      first_sequence(entry.fetch(2))
+    end
   end
 end
 
@@ -911,7 +927,11 @@ def collect_infusion_edits(info, parent, operation_groups, depth, edits, inserti
       end
 
       kind = target_kind(target)
-      original_body = block ? normalize_body(info.source[block.body_start...block.body_end]) : ""
+      original_body = if block
+        normalize_body(info.source[block.body_start...block.body_end])
+      else
+        ""
+      end
       body = composed_body(original_body, operations)
 
       if block
